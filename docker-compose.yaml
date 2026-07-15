@@ -1,0 +1,61 @@
+# ====================================================================
+# RA OpenVPN Docker Compose 
+# All values come from .env (see .env.example for defaults)
+# =====================================================================
+
+services:
+  ra-openvpn:
+    container_name: ${RA_OPENVPN_CONTAINER_NAME}
+    image: ${RA_OPENVPN_IMAGE}
+    privileged: true
+    ports:
+      - "${RA_OPENVPN_HOST_PORT}:${RA_OPENVPN_CONTAINER_PORT}/${RA_OPENVPN_PROTO}"
+    environment:
+      TRUST_SUB: ${RA_TRUST_SUB}
+      GUEST_SUB: ${RA_GUEST_SUB}
+      HOME_SUB:  ${RA_HOME_SUB}
+    volumes:
+      - ./pki:/etc/openvpn/pki
+      - ./clients:/etc/openvpn/clients
+      - ./config:/etc/openvpn/config
+      - ./staticclients:/etc/openvpn/staticclients
+      - ./log:/var/log/openvpn
+      - ./server.conf:/etc/openvpn/server.conf
+    # Grants permissions to manage networking configurations. Without it, the container processes cannot modify network settings.
+    cap_add:
+      - NET_ADMIN
+    restart: ${RA_RESTART_POLICY}
+    networks:
+      - ra_ovpn_net
+
+  openvpn-ui:
+    container_name: ${RA_OPENVPN_UI_CONTAINER_NAME}
+    image: ${RA_OPENVPN_UI_IMAGE}
+    environment:
+      OPENVPN_ADMIN_USERNAME: ${RA_OPENVPN_ADMIN_USERNAME}
+      OPENVPN_ADMIN_PASSWORD: ${RA_OPENVPN_ADMIN_PASSWORD}
+    privileged: true
+    ports:
+      # Localhost binding 
+      # "HOST_IP : HOST_PORT : CONTAINER_PORT / PROTOCOL"
+      - "${RA_OPENVPN_UI_BIND_LOCAL}:${RA_OPENVPN_UI_PORT}:${RA_OPENVPN_UI_PORT}/tcp"
+      # LAN binding (reachable inside 192.168.x networks)
+      - "${RA_OPENVPN_UI_BIND_LAN}:${RA_OPENVPN_UI_PORT}:${RA_OPENVPN_UI_PORT}/tcp"
+    volumes:
+      - ./:/etc/openvpn
+      - ./db:/opt/openvpn-ui/db
+      - ./pki:/usr/share/easy-rsa/pki
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: ${RA_RESTART_POLICY}
+    depends_on:
+      - ra-openvpn
+    networks:
+      - ra_ovpn_net
+
+networks:
+  ra_ovpn_net:
+    name: ${RA_DOCKER_NET_NAME}
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${RA_DOCKER_NET_SUBNET}

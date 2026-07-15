@@ -1,0 +1,45 @@
+# =====================================================================
+# RA OpenVPN — .gitignore
+# =====================================================================
+
+# --- Secrets ------------------------------------------------------------
+# All .env variants EXCEPT the example template
+.env
+.env.*
+!.env.example
+
+# --- PKI (certificate authority private keys, client certs, DH, ta.key) -
+pki/
+
+# --- Per-user generated files (contain client certificates) -------------
+clients/
+
+# --- Static per-client overrides (may contain routing secrets) ----------
+staticclients/
+
+# --- Runtime state ------------------------------------------------------
+# Web UI SQLite database (contains admin password hash)
+db/
+# OpenVPN status & log files
+log/
+# ifconfig-pool-persist and other runtime configs written by the container
+config/
+
+# --- Ad-hoc / scratch files --------------------------------------------
+temp
+tmp/
+*.tmp
+*.bak
+*.old
+*.orig
+
+# --- Editor artefacts --------------------------------------------------
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# --- OS junk -----------------------------------------------------------
+.DS_Store
+Thumbs.db
