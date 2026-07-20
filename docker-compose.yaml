@@ -20,7 +20,7 @@ services:
       - ./config:/etc/openvpn/config
       - ./staticclients:/etc/openvpn/staticclients
       - ./log:/var/log/openvpn
-      - ./server.conf:/etc/openvpn/server.conf
+      - ./server.conf:/etc/openvpn/server.conf:ro
     # Grants permissions to manage networking configurations. Without it, the container processes cannot modify network settings.
     cap_add:
       - NET_ADMIN
@@ -38,9 +38,10 @@ services:
     ports:
       # Localhost binding 
       # "HOST_IP : HOST_PORT : CONTAINER_PORT / PROTOCOL"
-      - "${RA_OPENVPN_UI_BIND_LOCAL}:${RA_OPENVPN_UI_PORT}:${RA_OPENVPN_UI_PORT}/tcp"
+      - "${RA_OPENVPN_UI_BIND_LOCAL}:${RA_OPENVPN_UI_PORT}:${RA_OPENVPN_UI_CONTAINER_PORT}/tcp"
       # LAN binding (reachable inside 192.168.x networks)
-      - "${RA_OPENVPN_UI_BIND_LAN}:${RA_OPENVPN_UI_PORT}:${RA_OPENVPN_UI_PORT}/tcp"
+      - "${RA_OPENVPN_UI_BIND_LAN}:${RA_OPENVPN_UI_PORT}:${RA_OPENVPN_UI_CONTAINER_PORT}/tcp"
+      
     volumes:
       - ./:/etc/openvpn
       - ./db:/opt/openvpn-ui/db

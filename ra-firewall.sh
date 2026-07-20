@@ -121,7 +121,7 @@ apply_rules() {
     ufw reload
     echo "     Done"
     echo ""
-    echo "🎉 Firewall configured successfully!"
+    echo "Firewall configured successfully!"
     echo ""
     echo "Verify with:"
     echo "    sudo ufw status verbose"

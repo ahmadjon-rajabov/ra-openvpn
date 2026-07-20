@@ -54,6 +54,7 @@ SCHEMA=(
     "RA_OPENVPN_UI_BIND_LOCAL|ip|yes|Loopback bind IP for UI (usually 127.0.0.1)"
     "RA_OPENVPN_UI_BIND_LAN|ip|yes|LAN bind IP for UI (workstation LAN IP)"
     "RA_OPENVPN_UI_PORT|port|yes|Port the Web UI listens on"
+    "RA_OPENVPN_UI_CONTAINER_PORT|port|yes|Container-internal port the UI process listens on (fixed by image, 8080)"
 
     "RA_OPENVPN_ADMIN_USERNAME|string|yes|Web UI admin username"
     "RA_OPENVPN_ADMIN_PASSWORD|secret|yes|Web UI admin password"

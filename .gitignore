@@ -25,6 +25,8 @@ log/
 # ifconfig-pool-persist and other runtime configs written by the container
 config/
 
+.provisioned
+
 # --- Ad-hoc / scratch files --------------------------------------------
 temp
 tmp/

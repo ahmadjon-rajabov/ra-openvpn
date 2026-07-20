@@ -1,462 +1,463 @@
-# RA OpenVPN — Remote Access VPN for the Isolated QCNets Lab
+# RA OpenVPN — Containerized Remote Access VPN for the Isolated QCNets Lab
 
-> **Status:** 🚧 Work in progress — Docker Compose scaffolding & host tooling complete; OpenVPN `server.conf` and first end-to-end connection are next.
-> **Last updated:** 2026-07-15
+A production-grade, split-tunnel OpenVPN deployment integrated with a TP-Link Omada SDN-managed multi-router network. Built for an isolated research lab that must be reachable remotely by team members through eduVPN.
 
-A Dockerized, TCP-based OpenVPN **remote-access** server, deployed on the workstation `192.168.7.20`, exposed through Router 1's WAN (NAT-forwarded by the Omada SDN Controller), designed to coexist with an existing OpenVPN on Router 3.
-
----
-
-## 📚 Table of Contents
-
-1. [Motivation & Goals](#motivation--goals)
-2. [Network Topology](#network-topology)
-3. [Existing (Coworker) VPNs — Do Not Touch](#existing-coworker-vpns--do-not-touch)
-4. [Design Decisions](#design-decisions)
-5. [Project Layout](#project-layout)
-6. [Prerequisites](#prerequisites)
-7. [Configuration (`.env`)](#configuration-env)
-8. [Docker Compose Stack](#docker-compose-stack)
-9. [Router 1 (Omada SDN) NAT Rule](#router-1-omada-sdn-nat-rule)
-10. [Host Firewall (UFW)](#host-firewall-ufw)
-11. [Management Scripts](#management-scripts)
-12. [Deployment Runbook](#deployment-runbook)
-13. [Reachability Test Results](#reachability-test-results)
-14. [Progress Checklist](#progress-checklist)
-15. [Roadmap / TODO](#roadmap--todo)
-16. [Troubleshooting](#troubleshooting)
+**Environment:** Debian 12 workstation | Docker Compose | 3-router Omada SDN mesh (WireGuard site-to-site) | TU Dresden eduVPN for the outer transit hop.
 
 ---
 
-## Motivation & Goals
+## Table of Contents
 
-The QCNets lab operates an **isolated 3-router network** that must be reachable remotely by team members for development, testing, and management of the SDN controller. Currently:
-
-- A OpenVPN runs on **Router 3** (standalone, TCP/443).
-- Another OpenVPN runs on the workstation `192.168.7.20` (TCP/1194) — not fully functional.
-- The setup is fragile, undocumented, and not integrated with the Omada SDN Controller.
-
-**Objectives for this project:**
-
-- ✅ Deploy an independent OpenVPN service without disrupting existing ones.
-- ✅ Fully containerized (Docker Compose), with a Web UI for user/certificate management.
-- ✅ Env-driven configuration — no hardcoded values.
-- ✅ Schema-based pre-flight validation.
-- ✅ Route through an **Omada-SDN-managed router** (Router 1) so the setup is integrated with the SDN control plane.
-- 🔜 Eventually replace the Router 3 OpenVPN entirely and add Router 3 to the SDN.
-- ✅ Split-tunnel: only the private LAN subnets flow through the VPN; user internet traffic is unaffected.
-- ✅ Only TCP (university firewall blocks UDP outbound); only ports 22 / 80 / 443 TCP allowed inbound to the isolated network.
+1. [Overview](#overview)
+2. [Screenshots](#screenshots)
+3. [Architecture](#architecture)
+5. [Prerequisites](#prerequisites)
+6. [Quickstart](#quickstart)
+7. [Configuration](#configuration)
+8. [Operations](#operations)
+9. [Security](#security)
+10. [Troubleshooting](#troubleshooting)
+11. [Design Decisions](#design-decisions)
+12. [Roadmap](#roadmap)
+13. [License](#license)
 
 ---
 
-## Network Topology
+## Overview
 
-```
-                    ┌────────────────┐
-                    │  Remote User   │
-                    │  (home / etc.) │
-                    └────────┬───────┘
-                             │
-                             ▼
-                    ┌────────────────┐
-                    │    eduVPN      │  (only 22/80/443 TCP allowed
-                    │  (university)  │   outbound after connection)
-                    └────────┬───────┘
-                             │
-                             ▼
-     ┌───────────────────────┴────────────────────────────┐
-     │                University Network                  │
-     │                                                    │
-     │   Router 1 WAN    Router 2 WAN    Router 3 WAN     │
-     │   172.31.54.28    172.31.54.??    172.31.54.20     │
-     └───────┬──────────────────┬───────────────┬────────┘
-             │                  │               │
-     ┌───────▼─────────┐  ┌─────▼───────┐  ┌───▼─────────┐
-     │   Router 1      │  │  Router 2   │  │  Router 3   │
-     │   192.168.5.1   │  │ 192.168.6.1 │  │ 192.168.7.1 │
-     │   (Omada SDN)   │  │ (Omada SDN) │  │ (Standalone)│
-     │                 │  │             │  │  QuantumEdge│
-     │   [NAT 443→     │  │             │  │   OpenVPN   │
-     │    192.168.7.20 │  │             │  │   :443/tcp  │
-     │    :1195]       │  │             │  │ 10.7.0.0/24 │
-     └───────┬─────────┘  └─────┬───────┘  └───┬─────────┘
-             │                  │              │
-             └────── WireGuard site-to-site mesh (all 3) ──────┘
-                                │
-                    ┌───────────▼──────────────┐
-                    │   Workstation            │
-                    │   192.168.7.20 (eno1)    │
-                    │   Debian 12 (bookworm)   │
-                    │                          │
-                    │   Docker containers:     │
-                    │   • Omada SDN Controller │
-                    │   • Coworker's OpenVPN   │
-                    │     :1194/tcp            │
-                    │     10.8.0.0/24          │
-                    │   • RA OpenVPN (NEW)     │
-                    │     :1195/tcp            │
-                    │     10.99.99.0/24        │
-                    │   • RA OpenVPN UI        │
-                    │     :8045/tcp            │
-                    └──────────────────────────┘
-```
+The QCNets lab operates a three-router network segmented into `192.168.5.0/24`, `192.168.6.0/24`, and `192.168.7.0/24`, connected by a WireGuard site-to-site mesh and managed centrally through an Omada SDN Controller. Team members need to reach this network remotely for development, testing, and SDN administration.
 
-**Traffic path when a remote user connects:**
+**This project delivers:**
 
-```
-Client → eduVPN → University → Router 1 WAN :443
-                             ↳ NAT-forward to 192.168.7.20:1195
-                                            ↳ OpenVPN container
-                                                    ↳ tun0 (10.99.99.0/24)
-                                                            ↳ NAT-MASQUERADE
-                                                            → 192.168.7.20/eno1
-                                                            → WG mesh
-                                                            → 192.168.5.0/24
-                                                                 6.0/24
-                                                                 7.0/24
-```
+- A dockerized, TCP-based OpenVPN server on the lab's workstation
+- Web-UI-driven certificate lifecycle management
+- Full SDN-integrated network entry (NAT-forwarded through a TP-Link Omada gateway)
+- Split-tunnel design — remote users retain their normal internet path
+- Env-driven configuration with schema-based pre-flight validation
+- Reproducible from a clean host in under 10 minutes
+
+**End result:** a remote user connects to eduVPN, then to this OpenVPN, and gains authenticated access to all three lab subnets as if physically present.
 
 ---
 
-## Existing VPNs — Do Not Touch
+## Screenshots
 
-Two pre-existing OpenVPN services must be avoided:
-
-| Where | Port | Protocol | Client Subnet | Notes |
-|---|---|---|---|---|
-| Router 3 (standalone Omada) | `443/tcp` | TCP | `10.7.0.0/24` | Named `QuantumEdge` in Omada UI. Full-tunnel mode. Working. |
-| Workstation `192.168.7.20` | `1194/tcp` | TCP | `10.8.0.0/24` | Bare-metal `openvpn.service`. Not fully functional. |
-
-**Our project must not collide with either.** We use different port, subnet, and container names.
+> **TODO:** Insert:
+> - Omada Controller dashboard showing 3 routers as Connected
+> - OpenVPN client `Initialization Sequence Completed` output
+> - OpenVPN UI certificates page (via SSH tunnel)
+> - `ping 192.168.5.1` success from a remote laptop after connection
 
 ---
 
-## Design Decisions
+## Architecture
 
-| Concern | Chosen Value | Rationale |
-|---|---|---|
-| Location | Workstation `192.168.7.20`, containerized | Central management; Docker already used for SDN |
-| Container base | `d3vilh/openvpn-server` + `d3vilh/openvpn-ui` | Open-source, web UI for user/cert management |
-| Local port | `1195/tcp` | Coworker uses `1194/tcp` on same host |
-| External port | `443/tcp` on Router 1 WAN | Only 22/80/443 TCP inbound at university |
-| Protocol | TCP only | University firewall drops UDP |
-| VPN client subnet | `10.99.99.0/24` | Doesn't collide with 10.7.0.0/24, 10.8.0.0/24, or any 192.168.x LAN |
-| Tunneling mode | Split-tunnel | Coexists with user's eduVPN; only push routes for LAN subnets |
-| Pushed routes | `192.168.5.0/24`, `192.168.6.0/24`, `192.168.7.0/24` | Full lab access via WG mesh |
-| Reverse routing | NAT masquerade on workstation | Zero router-side config; VPN clients appear as `192.168.7.20` on lab LANs |
-| UI access | UI bound only to `127.0.0.1` + `192.168.7.20` | Never exposed to the internet |
-| Configuration | `.env` file, schema-validated | Single source of truth, no secrets in repo |
-| Naming prefix | `ra-` (Remote Access) | Room for future VPN services on the same host |
+### Topology
 
+```mermaid
+flowchart TB
+    User["Remote User<br/>any location"]
+    eduVPN["TU Dresden eduVPN<br/>gateway.vpn.tu-dresden.de<br/>only 22/80/443 TCP allowed inbound"]
+    
+    subgraph University["University Network — 172.31.54.0/24"]
+        direction LR
+        R1WAN["Router 1 WAN<br/>172.31.54.28<br/>❌ blocked"]
+        R2WAN["Router 2 WAN<br/>172.31.54.11<br/>❌ blocked"]
+        R3WAN["Router 3 WAN<br/>172.31.54.20<br/>✅ entry point"]
+    end
+    
+    subgraph LabNetwork["Lab Network — Omada SDN Managed"]
+        direction TB
+        R1["Router 1<br/>192.168.5.1/24"]
+        R2["Router 2<br/>192.168.6.1/24"]
+        R3["Router 3<br/>192.168.7.1/24<br/>NAT: 443/tcp → 192.168.7.20:1195"]
+        
+        R1 <-.WireGuard mesh.-> R2
+        R2 <-.WireGuard mesh.-> R3
+        R1 <-.WireGuard mesh.-> R3
+        
+        Workstation["Workstation — 192.168.7.20<br/>Debian 12<br/><br/>Omada Controller<br/>ra-openvpn :1195<br/>ra-openvpn-ui :8045 LAN-only"]
+        R3 --> Workstation
+    end
+    
+    VPNClients["VPN client subnet<br/>10.99.99.0/24"]
+    
+    User -.①.- eduVPN
+    eduVPN -.②.- R3WAN
+    R3WAN --> R3
+    Workstation -.④ TLS + push routes.-> VPNClients
+    
+    classDef blocked fill:#ffdddd,stroke:#cc0000,color:#000
+    classDef working fill:#ddffdd,stroke:#008800,color:#000
+    classDef workstation fill:#ddddff,stroke:#0000aa,color:#000
+    class R1WAN,R2WAN blocked
+    class R3WAN working
+    class Workstation workstation
+```
 ---
 
-## Project Layout
+### Traffic Flow
 
-```
-/opt/ra-openvpn/
-├── .env                    # Actual config (chmod 600, gitignored)
-├── .env.example            # Template for documentation
-├── .gitignore              # Excludes secrets and runtime data
-├── docker-compose.yaml     # Two services: ra-openvpn + ra-openvpn-ui
-├── server.conf             # OpenVPN server config (Stage 3 — pending)
-│
-├── ra-ovpn.sh              # Container lifecycle → /usr/local/bin/ra-ovpn
-├── ra-validate.sh          # Schema-driven .env validator → /usr/local/bin/ra-validate
-├── ra-firewall.sh          # UFW/iptables host rules → /usr/local/bin/ra-firewall
-│
-├── pki/                    # Auto-populated by container (CA, certs, DH, TA)
-├── clients/                # Client .ovpn files (created via UI)
-├── config/                 # Extra client-specific configs
-├── staticclients/          # Static IP overrides
-├── log/                    # OpenVPN logs
-└── db/                     # Web UI SQLite database
-```
-
-### Symlinks in `/usr/local/bin`
-
-```bash
-ra-ovpn      → /opt/ra-openvpn/ra-ovpn.sh
-ra-validate  → /opt/ra-openvpn/ra-validate.sh
-ra-firewall  → /opt/ra-openvpn/ra-firewall.sh
+```mermaid
+sequenceDiagram
+    autonumber
+    participant L as Remote Laptop
+    participant E as eduVPN Gateway<br/>141.76.112.1
+    participant R3 as Router 3 WAN<br/>172.31.54.20:443
+    participant W as Workstation<br/>192.168.7.20:1195
+    participant Lab as Lab Subnets<br/>192.168.5/6/7.0/24
+    
+    L->>E: 1. Connect eduVPN
+    E-->>L: Assign 141.76.112.x
+    L->>R3: 2. TCP SYN to :443 (via eduVPN)
+    R3->>W: 3. NAT forward to :1195
+    W-->>L: 4. TLS handshake + client cert verify
+    W->>L: 5. Push routes 192.168.5/6/7.0/24
+    W-->>L: 6. Assign VPN IP 10.99.99.x
+    Note over L,W: Encrypted tunnel established
+    L->>Lab: 7. Traffic to lab subnet → utun → NAT MASQUERADE
+    Lab-->>L: 8. Return traffic via reverse path
+    Note over L: Internet traffic bypasses VPN (split-tunnel)
 ```
 
-Created with:
-```bash
-sudo ln -s /opt/ra-openvpn/ra-ovpn.sh     /usr/local/bin/ra-ovpn
-sudo ln -s /opt/ra-openvpn/ra-validate.sh /usr/local/bin/ra-validate
-sudo ln -s /opt/ra-openvpn/ra-firewall.sh /usr/local/bin/ra-firewall
-```
+**Why Router 3 (not Router 1)?** During deployment, I discovered that the university's edge firewall permits inbound TCP only to `172.31.54.20` on ports 22/80/443. The other two router WAN IPs are silently dropped despite being on the same subnet and having identical NAT configurations. Root cause identified as per-destination-IP filtering at the university edge, unrelated to our router configuration or SDN mode. Router 3 was originally used by a colleague's OpenVPN, which I consolidated into this deployment.
 
 ---
 
 ## Prerequisites
 
-Host: `192.168.7.20` — Debian 12 (bookworm), Docker + Compose plugin installed, UFW enabled.
+**Host:**
+- Debian 12 or equivalent Linux
+- Docker Engine + Compose plugin
+- UFW firewall installed
+- IPv4 forwarding capability
 
-Confirmed at deployment time:
+**Network:**
+- One router with WAN reachable from the intended remote-access source
+- Ability to add NAT/Port-Forwarding rules on that router (via Omada Controller or standalone admin)
+- Optional but recommended: WireGuard mesh or similar interconnect between segmented LANs, so VPN clients reach all lab subnets
 
-| Requirement | Verified How |
-|---|---|
-| IPv4 forwarding enabled | `sysctl net.ipv4.ip_forward` = `1` |
-| Can reach Router 1 LAN | `ping 192.168.5.1` succeeds via `192.168.7.1` |
-| WireGuard mesh healthy | `ip route get 192.168.5.1` shows `via 192.168.7.1` |
-| Docker running | `docker --version` |
-| No collisions | Coworker's ports/subnets documented above |
-
----
-
-## Configuration (`.env`)
-
-All configuration lives in `/opt/ra-openvpn/.env` — validated by `ra-validate.sh`.
-
-Copy the template and edit:
+**Verify host readiness:**
 ```bash
-cp .env.example .env
-sudo chmod 600 .env
-sudo chown root:root .env
-nano .env
+sysctl net.ipv4.ip_forward         # → 1
+docker --version                   # → 24.x+
+docker compose version             # → v2.x
+sudo ufw status                    # → active
+ip -o link show | grep <your_lan>  # → LAN interface
 ```
 
-Full variable reference (defined in `SCHEMA` inside `ra-validate.sh`):
-
-| Variable | Type | Example |
-|---|---|---|
-| `COMPOSE_PROJECT_NAME` | string | `ra-openvpn` |
-| `RA_OPENVPN_CONTAINER_NAME` | string | `ra-openvpn` |
-| `RA_OPENVPN_UI_CONTAINER_NAME` | string | `ra-openvpn-ui` |
-| `RA_OPENVPN_IMAGE` | image | `d3vilh/openvpn-server:latest` |
-| `RA_OPENVPN_UI_IMAGE` | image | `d3vilh/openvpn-ui:latest` |
-| `RA_OPENVPN_HOST_PORT` | port | `1195` |
-| `RA_OPENVPN_CONTAINER_PORT` | port | `1194` |
-| `RA_OPENVPN_PROTO` | protocol | `tcp` |
-| `RA_OPENVPN_UI_BIND_LOCAL` | ip | `127.0.0.1` |
-| `RA_OPENVPN_UI_BIND_LAN` | ip | `192.168.7.20` |
-| `RA_OPENVPN_UI_PORT` | port | `8045` |
-| `RA_OPENVPN_ADMIN_USERNAME` | string | `admin` |
-| `RA_OPENVPN_ADMIN_PASSWORD` | secret | *(strong password)* |
-| `RA_TRUST_SUB` | cidr | `10.0.0.0/8` |
-| `RA_GUEST_SUB` | cidr | `172.16.0.0/12` |
-| `RA_HOME_SUB` | cidr | `192.168.0.0/16` |
-| `RA_VPN_CLIENT_SUBNET` | cidr | `10.99.99.0/24` |
-| `RA_LAN_INTERFACE` | iface | `eno1` |
-| `RA_UI_ALLOWED_SUBNETS` | string | `"192.168.5.0/24 192.168.6.0/24 192.168.7.0/24 10.99.99.0/24"` |
-| `RA_DOCKER_NET_NAME` | string | `ra_openvpn_net` |
-| `RA_DOCKER_NET_SUBNET` | cidr | `172.20.0.0/24` |
-| `RA_RESTART_POLICY` | string | `unless-stopped` |
-
-**Validation types:** `port` (1-65535), `protocol` (tcp only), `cidr` (x.x.x.x/y), `ip` (x.x.x.x), `iface` (must exist on host via `ip link`), `secret` (must not be placeholder), `image` (image-reference format), `string` (anything non-empty).
-
 ---
 
-## Docker Compose Stack
+## Quickstart
 
-Two services defined in `docker-compose.yaml`:
+**1. Clone and enter project directory:**
 
-- **`ra-openvpn`** — the OpenVPN daemon; publishes `${RA_OPENVPN_HOST_PORT}` on the host; `NET_ADMIN` capability + `privileged` for TUN.
-- **`ra-openvpn-ui`** — the Beego-based Web UI; bound to loopback + LAN IP only; talks to the OpenVPN container via a shared docker bridge and the `pki/` volume.
+```bash
+sudo git clone https://github.com/ahmadjon-rajabov/ra-openvpn.git /opt/ra-openvpn
+cd /opt/ra-openvpn
+```
 
-Both share the docker bridge network `${RA_DOCKER_NET_NAME}` (`172.20.0.0/24`).
+**2. Create your `.env` from the template:**
 
-Bind-mounted volumes preserve state across container recreation.
+```bash
+sudo cp .env.example .env
+sudo chmod 600 .env
+sudo chown root:root .env
+sudo nano .env
+```
 
----
+Edit at minimum:
+- `RA_OPENVPN_ADMIN_PASSWORD` — set a strong password
+- `RA_OPENVPN_UI_BIND_LAN` — your workstation's LAN IP
+- `RA_LAN_INTERFACE` — your host's LAN interface (e.g., `eno1`, `enp3s0`, `eth0`)
+- `RA_UI_ALLOWED_SUBNETS` — LANs allowed to reach the Web UI
 
-## Router 1 (Omada SDN) NAT Rule
+**3. Install the CLI symlinks:**
 
-Configured via the Omada SDN Controller Web UI at `https://192.168.7.20:8043`.
+```bash
+sudo chmod +x /opt/ra-openvpn/ra-*.sh
+sudo ln -sf /opt/ra-openvpn/ra-ovpn.sh     /usr/local/bin/ra-ovpn
+sudo ln -sf /opt/ra-openvpn/ra-validate.sh /usr/local/bin/ra-validate
+sudo ln -sf /opt/ra-openvpn/ra-firewall.sh /usr/local/bin/ra-firewall
+```
 
-**Path:** *Settings → Transmission → NAT → Virtual Servers*
+**4. Validate configuration:**
 
-**Rule:**
+```bash
+ra-validate
+```
+
+Expected: Validation passed — configuration looks great.
+
+**5. Apply host firewall rules:**
+
+```bash
+sudo ra-firewall apply
+```
+
+**6. Start the stack:**
+
+```bash
+ra-ovpn up
+ra-ovpn logs ra-openvpn      # follow logs; watch for PKI generation
+```
+
+**7. Configure the router entry point (external NAT):**
+
+On your router's admin UI or SDN Controller, add:
 
 | Field | Value |
 |---|---|
-| Name | `RA-OpenVPN` |
-| Interface | `2.5G WAN/LAN1` |
-| External Port | `443` |
-| Internal Server IP | `192.168.7.20` |
-| Internal Port | `1195` |
-| Protocol | `TCP` |
-| Status | Enabled |
+| External Port | `443` (or any port you have open) |
+| Internal IP | Your workstation IP (e.g., `192.168.7.20`) |
+| Internal Port | `1195` (matches `RA_OPENVPN_HOST_PORT`) |
+| Protocol | TCP |
 
-⚠️ **NAT Loopback caveat:** many TP-Link routers don't support hairpinning. Test the WAN IP from **outside** (via eduVPN), not from inside the LAN.
+**8. Create the first user via Web UI:**
 
----
-
-## Host Firewall (UFW)
-
-Rules are applied by `ra-firewall.sh apply`. They are:
-
-1. **Allow inbound** `${RA_OPENVPN_HOST_PORT}/tcp` from anywhere.
-2. **Allow inbound** `${RA_OPENVPN_UI_PORT}/tcp` from `${RA_UI_ALLOWED_SUBNETS}` only.
-3. **NAT masquerade** `${RA_VPN_CLIENT_SUBNET}` → `${RA_LAN_INTERFACE}` (added to `/etc/ufw/before.rules` in a tagged block).
-4. `DEFAULT_FORWARD_POLICY="ACCEPT"` in `/etc/default/ufw`.
-5. Persistent `net.ipv4.ip_forward=1` via `/etc/sysctl.d/99-ra-openvpn.conf`.
-
-All rules are tagged `ra-openvpn` in UFW comments for easy audit/removal.
-
-Preview / apply / remove:
 ```bash
-sudo ra-firewall status
-sudo ra-firewall apply
-sudo ra-firewall remove
+# From your laptop, SSH-tunnel to reach the UI
+ssh -L 8045:192.168.7.20:8045 user@172.31.54.20
+```
+
+Then browse to `http://localhost:8045`. Login → Certificates → New → download `<user>.ovpn`.
+
+**9. Connect a client:**
+
+```bash
+sudo openvpn --config <user>.ovpn
+```
+
+Watch for `Initialization Sequence Completed`.
+
+**10. Verify:**
+
+```bash
+ping -c 3 192.168.5.1    # if your Router 1 LAN
+ping -c 3 192.168.7.20   # workstation
+curl -s ifconfig.me      # should still show your ISP IP (split-tunnel proof)
 ```
 
 ---
 
-## Management Scripts
+## Configuration
 
-### `ra-ovpn` — Stack lifecycle
+All runtime configuration lives in `/opt/ra-openvpn/.env`. The full schema is enforced by `ra-validate`.
+
+### Environment Variables
+
+| Variable | Type | Example | Purpose |
+|---|---|---|---|
+| `COMPOSE_PROJECT_NAME` | string | `ra-openvpn` | Docker Compose project prefix |
+| `RA_OPENVPN_CONTAINER_NAME` | string | `ra-openvpn` | OpenVPN container name |
+| `RA_OPENVPN_UI_CONTAINER_NAME` | string | `ra-openvpn-ui` | Web UI container name |
+| `RA_OPENVPN_IMAGE` | image ref | `d3vilh/openvpn-server:0.5.5` | Pinned server image |
+| `RA_OPENVPN_UI_IMAGE` | image ref | `d3vilh/openvpn-ui:0.9.5.6` | Pinned UI image |
+| `RA_OPENVPN_HOST_PORT` | port | `1195` | Port on the host for OpenVPN |
+| `RA_OPENVPN_CONTAINER_PORT` | port | `1194` | Port inside the container |
+| `RA_OPENVPN_UI_CONTAINER_PORT` | port | `8080` | UI's internal port |
+| `RA_OPENVPN_PROTO` | protocol | `tcp` | TCP required (UDP blocked upstream) |
+| `RA_OPENVPN_UI_BIND_LOCAL` | ip | `127.0.0.1` | Localhost binding for SSH-tunnel access |
+| `RA_OPENVPN_UI_BIND_LAN` | ip | `192.168.7.20` | LAN binding for lab-network access |
+| `RA_OPENVPN_UI_PORT` | port | `8045` | Web UI port |
+| `RA_OPENVPN_ADMIN_USERNAME` | string | `admin` | Web UI admin username |
+| `RA_OPENVPN_ADMIN_PASSWORD` | secret | *strong password* | Web UI admin password |
+| `RA_TRUST_SUB` | cidr | `10.0.0.0/8` | Trusted subnet (image env var) |
+| `RA_GUEST_SUB` | cidr | `172.16.0.0/12` | Guest subnet (image env var) |
+| `RA_HOME_SUB` | cidr | `192.168.0.0/16` | Home subnet (image env var) |
+| `RA_VPN_CLIENT_SUBNET` | cidr | `10.99.99.0/24` | VPN client address pool |
+| `RA_LAN_INTERFACE` | iface | `eno1` | Host LAN interface for NAT masquerade |
+| `RA_UI_ALLOWED_SUBNETS` | string | `"192.168.5.0/24 …"` | LANs permitted to reach UI |
+| `RA_DOCKER_NET_NAME` | string | `ra_openvpn_net` | Internal Docker bridge name |
+| `RA_DOCKER_NET_SUBNET` | cidr | `172.20.0.0/24` | Internal Docker bridge subnet |
+| `RA_RESTART_POLICY` | string | `unless-stopped` | Docker restart policy |
+
+### Server Configuration
+
+The OpenVPN server config lives at `/opt/ra-openvpn/server.conf`. It's bind-mounted read-only into the container to prevent UI-side overwrites. Key settings:
+
+- **Transport:** TCP on port 1194 (mapped to host 1195)
+- **VPN subnet:** `10.99.99.0/24` (must match `RA_VPN_CLIENT_SUBNET`)
+- **Data ciphers:** `AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305`
+- **Control channel:** SHA256 + TLS 1.2 minimum + tls-crypt
+- **Pushed routes:** `192.168.5/6/7.0/24` (split-tunnel)
+- **Client-to-client:** disabled by default
+- **Management interface:** `0.0.0.0:2080` inside the container (used by the UI)
+
+Edit `server.conf` on the host, then `ra-ovpn restart`.
+
+---
+
+## Operations
+
+Three custom shell scripts manage the deployment. All are idempotent and safe to re-run.
+
+### `ra-ovpn` — Stack Lifecycle
 
 ```
-Usage:  ra-ovpn <command> [--no-validate]
+Usage: ra-ovpn <command> [--no-validate]
 ```
 
-Commands (auto-validate: up, restart, update): up Validate + start the stack (detached) down Stop and remove containers restart Validate + restart both containers logs [svc] Follow logs (svc: ra-openvpn | ra-openvpn-ui) status Show container status validate Run pre-flight validation only pull Pull latest images update Validate + pull + restart shell [svc] Open shell in container (default: ra-openvpn) dir Print the project directory help Show this help
-Flags: --no-validate Skip validation (use with caution)
+Commands: 
+- `up` Validate + start the stack 
+- `down` Stop and remove containers (preserves volumes) 
+- `restart` Validate + restart both containers 
+- `logs` [svc] Follow logs (svc: ra-openvpn | ra-openvpn-ui) 
+- `status` Show container status validate Run pre-flight validation only
+- `pull` Pull latest images update Validate + pull + restart shell [svc] Open shell in a container 
+- `dir` Print the project directory 
+- `help` Show help
 
+Auto-validates before `up`, `restart`, and `update` (skip with `--no-validate` for advanced use).
 
-### `ra-validate` — Pre-flight config check
+### `ra-validate` — Pre-flight Configuration Check
 
-Schema-driven, four steps:
-1. Required files exist.
-2. Every schema variable is present and non-empty in `.env`.
-3. Values pass type-specific validators (ports, CIDRs, interfaces, ...).
-4. `docker compose config -q` parses the file cleanly.
+Schema-driven validation with four steps:
 
-Exit codes: `0` = pass, `1` = validation failed, `2` = script setup problem.
+1. **File presence** — `.env`, `docker-compose.yaml`, `server.conf` exist
+2. **Variable presence** — every schema variable set and non-empty
+3. **Type validation** — port ranges, CIDR notation, existing interface, non-placeholder secrets
+4. **Compose parseability** — `docker compose config -q` clean parse
 
-### `ra-firewall` — Host firewall manager
+Exit codes: `0` = pass, `1` = validation failure, `2` = script setup problem.
+
+Supported types: `port`, `protocol`, `cidr`, `ip`, `iface`, `secret`, `image`, `string`.
+
+### `ra-firewall` — Host Firewall Manager
 
 ```
 Usage: sudo ra-firewall <apply|remove|status>
 ```
 
-Idempotent (safe to re-run). Rules are tagged `ra-openvpn`.
+Applies (or removes) all firewall infrastructure this project requires:
+
+1. **Inbound TCP** on `RA_OPENVPN_HOST_PORT` from any source
+2. **Inbound TCP** on `RA_OPENVPN_UI_PORT` from `RA_UI_ALLOWED_SUBNETS` only
+3. **NAT masquerade** for `RA_VPN_CLIENT_SUBNET` → `RA_LAN_INTERFACE` (tagged block in `/etc/ufw/before.rules`)
+4. **Enables IPv4 forwarding** persistently via `/etc/sysctl.d/99-ra-openvpn.conf`
+5. **Sets** `DEFAULT_FORWARD_POLICY=ACCEPT` in `/etc/default/ufw`
+
+All rules are tagged with `ra-openvpn` comments for auditability. `ra-firewall remove` cleanly reverses everything.
 
 ---
 
-## Deployment Runbook
+## Security
 
-### First-time deployment
+### PKI
 
-```bash
-# 1. Clone / copy project to /opt/ra-openvpn
-sudo mkdir -p /opt/ra-openvpn
-# (copy files in)
-# 2. Configure secrets
-cd /opt/ra-openvpn sudo cp .env.example .env 
-sudo nano .env 
-# set RA_OPENVPN_ADMIN_PASSWORD etc. sudo chmod 600 .env sudo 
-chown root:root .env
-# 3. Symlink helpers
-sudo chmod +x ra-*.sh 
-sudo ln -sf /opt/ra-openvpn/ra-ovpn.sh /usr/local/bin/ra-ovpn 
-sudo ln -sf /opt/ra-openvpn/ra-validate.sh /usr/local/bin/ra-validate 
-sudo ln -sf /opt/ra-openvpn/ra-firewall.sh /usr/local/bin/ra-firewall
-# 4. Validate config
-ra-validate
-# 5. Apply firewall
-sudo ra-firewall apply
-# 6. Start the stack (once server.conf is in place — see TODO)
-ra-ovpn up
-# 7. Follow logs to confirm PKI generation
-ra-ovpn logs ra-openvpn
-```
-#### 8. Create first user via UI at http://192.168.7.20:8045
+- **CA private key** lives in `pki/private/ca.key` (never leaves the host)
+- **Server cert/key** bind-mounted read-only into container
+- **Client keys** generated inside container; inline versions embedded in `.ovpn` files
+- **CRL** regenerated on revocation
+- All PKI directory contents excluded from git
 
-### Add/remove Router 1 NAT rule
+### Web UI Binding Model
 
-Only through the Omada SDN Controller — see section above.
+- The UI is bound to exactly two addresses: `127.0.0.1:8045` → local-only access (SSH tunnel required from remote) `192.168.7.20:8045` → lab LAN access (from any host in `192.168.7.0/24`)
+- **Deliberately not** bound to `0.0.0.0` — so VPN clients (arriving via `tun0`) **cannot** reach the UI. Administrative access requires either SSH into the workstation (with credentials) or physical presence on the lab LAN. This is a defense-in-depth boundary against compromised VPN clients.
 
-### Regenerate a client cert
+### Split-Tunnel Design
 
-Via the Web UI (`http://192.168.7.20:8045`) → Certificates → New.
+Only `192.168.5.0/24`, `192.168.6.0/24`, and `192.168.7.0/24` are pushed to clients. The client's default gateway is unchanged — internet traffic doesn't flow through the VPN.
 
----
+**Benefits:**
+- Coexists with the user's eduVPN (or any other VPN)
+- Doesn't consume bandwidth on the lab uplink
+- User privacy preserved (their web browsing doesn't traverse lab infrastructure)
 
-## Reachability Test Results
+### Modern Crypto
+- **Data channel:** AEAD ciphers only — `AES-256-GCM`, `AES-128-GCM`, `CHACHA20-POLY1305`
+- **Control channel:** SHA256 HMAC + TLS 1.2 minimum
+- **tls-crypt** wrapping the control channel (harder to fingerprint, resistant to active probing)
+- **Client cert required** (`verify-client-cert require`) — no username/password fallback
 
-Recorded during initial planning (2026-07-15):
+### Secrets Management
 
-| Test | Command | Result |
-|---|---|---|
-| Router 1 WAN reachable from eduVPN (before NAT rule) | `curl -v http://172.31.54.28` | ❌ Timed out |
-| Router 3 WAN reachable from eduVPN | `curl -v http://172.31.54.20` | ✅ Connection refused (TCP handshake OK) |
-| Router 1 WAN reachable after test NAT rule | `nc -vz 172.31.54.28 443` | ✅ Connection succeeded |
-| Ping Router 1 LAN from workstation | `ping 192.168.5.1` | ✅ 1.8 ms |
-| Route to `192.168.5.1` | `ip route get 192.168.5.1` | ✅ via `192.168.7.1` |
-
-**Conclusion:** Router 1's WAN is reachable via eduVPN **when a NAT rule is present**. Option 2 (parallel to coworker's Router 3 setup) is viable.
-
----
-
-## Progress Checklist
-
-### ✅ Done
-
-- [x] Requirements gathered; coworker's VPN details documented
-- [x] Reachability of Router 1 WAN from eduVPN verified
-- [x] Design decisions locked in (see table above)
-- [x] Directory layout `/opt/ra-openvpn/` created
-- [x] `.env.example` + `.env` (chmod 600) created
-- [x] `docker-compose.yaml` written, env-driven
-- [x] `ra-ovpn.sh` (lifecycle) written + symlinked
-- [x] `ra-validate.sh` (schema-driven pre-flight) written + tested
-- [x] `ra-firewall.sh` (UFW/NAT/forwarding) written
-- [x] Router 1 NAT test rule verified via `nc -vz`
-
-### 🚧 In Progress
-
-- [ ] `server.conf` — currently empty (0 bytes)
-- [ ] `ra-firewall apply` — not yet applied
-- [ ] Router 1 permanent NAT rule (`443/tcp → 192.168.7.20:1195`) — needs to replace the test rule
-- [ ] First stack startup (`ra-ovpn up`)
-- [ ] First client `.ovpn` file generated and tested end-to-end
-
-### 🎯 Future
-
-- [ ] Pin Docker image versions in `.env` (drop `:latest`)
-- [ ] Move Web UI behind HTTPS + reverse proxy
-- [ ] Add Router 3 to Omada SDN
-- [ ] Retire coworker's Router 3 OpenVPN and workstation :1194 OpenVPN
-- [ ] Migrate all users to the new certs
-- [ ] Static public IP from university IT — replaces manual WAN IP tracking
-
----
-
-## Roadmap / TODO
-
-### Stage 3 (next) — OpenVPN `server.conf`
-Compose file server-side directives, pushed routes, TLS-crypt, split-tunnel setup.
-
-### Stage 4 — First launch
-`ra-firewall apply` → `ra-ovpn up` → PKI auto-generation → confirm `1195/tcp` listening.
-
-### Stage 5 — Permanent Router 1 NAT rule
-Delete the test rule; add the production rule per the [Router 1 (Omada SDN) NAT Rule](#router-1-omada-sdn-nat-rule) section.
-
-### Stage 6 — First client
-Create a user via UI → download `.ovpn` → edit `remote 172.31.54.28 443 tcp-client` → connect via eduVPN → `ping 192.168.5.1` verify.
-
-### Stage 7 — Harden & document
-- Pin image versions
-- Add restart / update workflow
-- CI/CD for validation
-- Migration plan for coworker's setups
+- `.env` is `chmod 600`, owned by root, excluded from git
+- PKI files (`pki/`), UI database (`db/`), client `.ovpn` files, and IP-persistence file (`config/ipp.txt`) all excluded from git
+- Only `.env.example` (with placeholder values) is committed
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely Cause | Fix |
-|---|---|---|
-| `ra-validate: command not found` | Symlink missing | `sudo ln -sf /opt/ra-openvpn/ra-validate.sh /usr/local/bin/ra-validate` |
-| `Validation failed` about port range | Invalid value in `.env` | Fix `.env` and re-run `ra-validate` |
-| `interface 'eno1' does not exist` | Different NIC name | `ip -o link show` — set `RA_LAN_INTERFACE` accordingly |
-| Client connects but can't reach 192.168.5.1 | Missing masquerade / forwarding | `sudo iptables -t nat -L POSTROUTING -n \| grep 10.99.99` and `sysctl net.ipv4.ip_forward` |
-| Client can't connect at all | NAT rule wrong or university blocks | `sudo tcpdump -i eno1 tcp port 1195` while connecting; test `nc -vz 172.31.54.28 443` from eduVPN |
-| Docker Compose won't parse | Missing/typo variable | `ra-validate` will point to which one |
-| Broken symlink warnings | Renamed file, stale symlink | `sudo rm /usr/local/bin/ra-*` and recreate |
-| Web UI unreachable | UFW rule missing / wrong subnet | `sudo ufw status verbose \| grep 8045`; `sudo ra-firewall status` |
+### Reachability Diagnostics
 
+```bash
+# From your remote laptop with eduVPN active
+nc -vz -w 5 <router_wan_ip> 443
+
+#Expected outcomes:
+succeeded → router forwarding to workstation, OpenVPN listening
+refused → router reached, port not forwarded (add NAT rule)
+timed out → packets dropped upstream (firewall or blocked IP)
+```
+
+### OpenVPN Connection Fails
+
+```bash
+# On workstation, watch server logs during client connect
+ra-ovpn logs ra-openvpn
+
+# Check that OpenVPN is listening
+sudo ss -tlnp | grep 1195
+
+# Check container health
+ra-ovpn status
+```
+
+### After Tunnel Established, No Lab Access
+
+```bash
+# On workstation
+sudo iptables -t nat -L POSTROUTING -n | grep 10.99.99
+# Should show MASQUERADE rule for 10.99.99.0/24 out via eno1
+
+sysctl net.ipv4.ip_forward
+# Should be 1
+```
+If either check fails: `sudo ra-firewall apply`.
+
+---
+
+## Design Decisions
+
+|Decision       |Choice | Rationale |
+|---------------|---------------------------------------------|-------------------------------------------------------|
+|Container base |`d3vilh/openvpn-server` + `d3vilh/openvpn-ui`|Actively maintained, Web UI included, sensible defaults|
+|Location       |Workstation container                        |Central management; same host runs Omada Controller    |
+|Transport      |TCP-only                                     |UDP blocked outbound at university firewall            |
+|External port  |443/tcp                                      |Only 22/80/443 TCP allowed inbound to lab subnet       |
+|VPN subnet     |`10.99.99.0/24`                              |Distinctive; unlikely home-network conflict            |
+|Tunneling      |Split-tunnel                                 |Coexists with eduVPN; better UX for users              |
+|Config approach|Env-driven with schema validation            |Single source of truth, no hardcoded values            |
+|UI exposure    |Localhost + lab LAN only                     |Defense-in-depth against compromised VPN client        |
+|Router entry   |Omada SDN NAT rule                           |Centrally managed; audit trail; no per-router logins   |
+|PKI            |Container-managed EasyRSA                    |No manual cert management; UI-driven lifecycle         |
+|Restart policy |`unless-stopped`                             |Survives host reboot; won't restart after manual stop  |
+
+---
+
+## Roadmap
+
+Short-term:
+- Triple-remote client .ovpn template (Routers 1, 2, 3 for failover) — pending IT whitelist for Routers 1 & 2
+- Server certificate CN distinct from CA CN (cosmetic; via easyrsa build-server-full --req-cn)
+- Backup/restore automation (ra-ovpn backup and restore commands)
+- ra-seed.sh — SQL-driven UI database initialization for fully-idempotent container recreation
+
+Medium-term:
+- Non-admin UI user for daily cert management (separate from full admin)
+- HTTPS reverse proxy in front of the UI (nginx + Let's Encrypt)
+- Per-user access controls via client-config-dir + iptables (restrict specific users to specific subnets)
+- Client onboarding docs (macOS Tunnelblick, Windows OpenVPN Connect, Linux NM, iOS/Android)
+
+Long-term:
+- Prometheus exporter for OpenVPN metrics
+- GitHub Actions CI running ra-validate on PRs
+- Migration to public IP or DDNS to remove WAN-IP tracking dependency
+
+---
+
+## License
+MIT License — see LICENSE file.
