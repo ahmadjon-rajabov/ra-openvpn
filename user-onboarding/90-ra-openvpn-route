@@ -1,0 +1,39 @@
+#!/bin/sh
+# 90-ra-openvpn-route — NetworkManager dispatcher script.
+#
+# Purpose:
+#   Maintain a /32 route to the ra-openvpn server via eduVPN's tun0,
+#   so that a NetworkManager-launched OpenVPN client can reach the server
+#   even after eduVPN reconnects.
+#
+# Install location: /etc/NetworkManager/dispatcher.d/90-ra-openvpn-route
+# Owner/mode:       root:root 0755
+# Configured via:   /etc/ra-openvpn/client.env  (RA_SERVER=<ip>)
+#
+# This file is installed by ra-nm-import.sh and removed by ra-nm-cleanup.sh.
+
+set -eu
+
+CONF=/etc/ra-openvpn/client.env
+[ -r "$CONF" ] || exit 0
+# shellcheck source=/dev/null
+. "$CONF"
+[ -n "${RA_SERVER:-}" ] || exit 0
+
+IFACE="$1"
+ACTION="$2"
+
+[ "$IFACE" = "tun0" ] || exit 0
+
+case "$ACTION" in
+    up|vpn-up)
+        GW=$(ip -o route show dev tun0 2>/dev/null \
+             | awk '/^default/ {for(i=1;i<=NF;i++) if($i=="via") {print $(i+1); exit}}')
+        [ -n "$GW" ] && ip route replace "$RA_SERVER/32" via "$GW" dev tun0
+        ;;
+    down|vpn-down|pre-down)
+        ip route del "$RA_SERVER/32" 2>/dev/null || true
+        ;;
+esac
+
+exit 0

@@ -13,13 +13,14 @@ A production-grade, split-tunnel OpenVPN deployment integrated with a TP-Link Om
 3. [Architecture](#architecture)
 5. [Prerequisites](#prerequisites)
 6. [Quickstart](#quickstart)
-7. [Configuration](#configuration)
-8. [Operations](#operations)
-9. [Security](#security)
-10. [Troubleshooting](#troubleshooting)
-11. [Design Decisions](#design-decisions)
-12. [Roadmap](#roadmap)
-13. [License](#license)
+7. [User Onboarding](user-onboarding/README.md)
+8. [Configuration](#configuration)
+9. [Operations](#operations)
+10. [Security](#security)
+11. [Troubleshooting](#troubleshooting)
+12. [Design Decisions](#design-decisions)
+13. [Roadmap](#roadmap)
+14. [License](#license)
 
 ---
 
@@ -222,20 +223,21 @@ ssh -L 8045:192.168.7.20:8045 user@172.31.54.20
 
 Then browse to `http://localhost:8045`. Login → Certificates → New → download `<user>.ovpn`.
 
-**9. Connect a client:**
+**9. Onboard clients:**
+
+Distribute the [`user-onboarding/`](user-onboarding/) folder together with each user's `.ovpn` file. Setup instructions for Windows, macOS, and Linux live in [`user-onboarding/README.md`](user-onboarding/README.md).
+
+For a quick smoke test from the admin machine:
 
 ```bash
 sudo openvpn --config <user>.ovpn
 ```
 
-Watch for `Initialization Sequence Completed`.
-
-**10. Verify:**
+Watch for Initialization Sequence Completed, then in another terminal:
 
 ```bash
-ping -c 3 192.168.5.1    # if your Router 1 LAN
-ping -c 3 192.168.7.20   # workstation
-curl -s ifconfig.me      # should still show your ISP IP (split-tunnel proof)
+ping -c 3 192.168.5.1     # Router 1 LAN
+curl -s ifconfig.me       # should still show your ISP IP (split-tunnel proof)
 ```
 
 ---
@@ -450,7 +452,6 @@ Medium-term:
 - Non-admin UI user for daily cert management (separate from full admin)
 - HTTPS reverse proxy in front of the UI (nginx + Let's Encrypt)
 - Per-user access controls via client-config-dir + iptables (restrict specific users to specific subnets)
-- Client onboarding docs (macOS Tunnelblick, Windows OpenVPN Connect, Linux NM, iOS/Android)
 
 Long-term:
 - Prometheus exporter for OpenVPN metrics
