@@ -1,14 +1,29 @@
-# ra-openvpn — User Onboarding
+# User Onboarding RA-OpenVPN
 
 Setup instructions for connecting to **ra-openvpn** from Windows, macOS, or Linux.
 
-> **Prerequisite for all platforms:** you must be connected to **eduVPN**
-> before connecting to ra-openvpn. The ra-openvpn server is only reachable
-> through the TU Dresden network.
+> **Prerequisite for all platforms:** you must be connected to **eduVPN** before connecting to ra-openvpn. The ra-openvpn server is only reachable through the TU Dresden network.
 
 ---
 
-## Contents of this folder
+## What files do you need?
+
+> Your personal **`<yourname>.ovpn`** file will be sent to you separately by
+the administrator through a secure channel (do not share it —
+it contains your private key).
+
+Beyond that, what you download from this folder depends on your OS:
+
+| Platform     | Files to download from this folder                                                    |
+|--------------|---------------------------------------------------------------------------------------|
+| **Windows**  | *(nothing — your `.ovpn` file is enough)*                                             |
+| **macOS**    | *(nothing — your `.ovpn` file is enough)*                                             |
+| **Linux**    | `ra-nm-import.sh`, `ra-nm-cleanup.sh`, `90-ra-openvpn-route`                          |
+| **All**      | `ra-diagnose.sh` — only if you're asked to send diagnostics *(Linux only for now)*    |
+
+---
+
+## Reference: what each file does
 
 | File                     | Platform    | Purpose                                                                                       |
 |--------------------------|-------------|-----------------------------------------------------------------------------------------------|
@@ -30,14 +45,14 @@ if troubleshooting, `ra-diagnose.sh`. Linux users need all four scripts.
 
 1. Install **[OpenVPN Connect](https://openvpn.net/client/)** (the official
    Windows client) if not already installed.
-2. Connect to **eduVPN** first (via the eduVPN Windows client).
+2. Connect to **[eduVPN](https://www.eduvpn.org/client-apps/)** first (via the eduVPN Windows client).
 3. Open OpenVPN Connect → **File** tab → drag & drop `<yourname>.ovpn` onto
    the window, or click **Browse** and select it.
 4. Click **Connect** (toggle switch).
 
 ### Daily use
 
-1. Connect eduVPN.
+1. Connect **eduVPN**.
 2. Open OpenVPN Connect → toggle **`<yourname>`** on.
 
 ### Verify
@@ -55,14 +70,14 @@ ping 192.168.7.1
 
 ### One-time setup
 
-1. Install **Tunnelblick** (free, open-source OpenVPN client for macOS) or **OpenVPN Connect**.
-2. Connect to **eduVPN** first (via the eduVPN macOS client).
+1. Install **[Tunnelblick](https://tunnelblick.net/)** (free, open-source OpenVPN client for macOS) or **[OpenVPN Connect](https://openvpn.net/client/)**.
+2. Connect to **[eduVPN](https://www.eduvpn.org/client-apps/)** first (via the eduVPN macOS client).
 3. Double-click `<yourname>.ovpn` — Tunnelblick will offer to install it. Choose Only Me unless you need multi-user access.
 4. Click the Tunnelblick menu-bar icon → **Connect `<yourname>`**.
 
 ### Daily use
 
-1. Connect eduVPN.
+1. Connect **eduVPN**.
 2. Tunnelblick/OpenVPN Connect menu-bar icon → **Connect `<yourname>`**.
 
 ### Verify
@@ -79,11 +94,17 @@ ping -c 3 192.168.7.1
 
 ## Linux 
 
-Linux needs one extra setup step because NetworkManager's OpenVPN plugin does not, by default, correctly handle the routing when eduVPN is stacked underneath. The ra-nm-import.sh script fixes this automatically.
+Linux needs one extra setup step because NetworkManager's OpenVPN plugin does not, by default, correctly handle the routing when eduVPN is stacked underneath. The `ra-nm-import.sh` script fixes this automatically.
 
 ### One-time setup
 
-Open a terminal in this folder and run:
+1. Connect to **[eduVPN](https://www.eduvpn.org/client-apps/)** first
+2. **Download the three Linux scripts** into a new folder:
+   - `ra-nm-import.sh`
+   - `ra-nm-cleanup.sh`
+   - `90-ra-openvpn-route`
+3. Place your `<yourname>.ovpn`** in the same folder.
+4. Open a terminal in new folder and run:
 
 ```bash
 sudo ./ra-nm-import.sh ./<yourname>.ovpn
@@ -102,9 +123,9 @@ Installed dispatcher /etc/NetworkManager/dispatcher.d/90-ra-openvpn-route
 
 ### Daily use
 
-1. Connect **eduVPN** (network menu → toggle on).
-2. Connect OpenVPN, toggle <yourname> on.
-3. Toggle off to disconnect.
+1. Ensure **eduVPN** is connected (top-right network menu → toggle on).
+2. Open **VPN Connections** → toggle **`<yourname>`** on.
+4. To disconnect, toggle it off in the same menu.
 
 ### Verify
 
@@ -120,7 +141,7 @@ ping -c 3 192.168.7.1
 ## What was installed on your system 
 
 | Path | Removed by cleanup? |
-|----|------------------------------------------------------|
+|----|-------------------------------------------------------|
 | NetworkManager connection profile `<yourname>`    |    ✅  |
 | `/etc/ra-openvpn/client.env`                      |    ✅  |
 | `/etc/NetworkManager/dispatcher.d/90-ra-openvpn-route`|✅  |
