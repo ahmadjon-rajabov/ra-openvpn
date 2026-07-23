@@ -14,12 +14,12 @@ it contains your private key).
 
 Beyond that, what you download from this folder depends on your OS:
 
-| Platform     | Files to download from this folder                                                    |
-|--------------|---------------------------------------------------------------------------------------|
-| **Windows**  | *(nothing — your `.ovpn` file is enough)*                                             |
-| **macOS**    | *(nothing — your `.ovpn` file is enough)*                                             |
-| **Linux**    | `ra-nm-import.sh`, `ra-nm-cleanup.sh`, `90-ra-openvpn-route`                          |
-| **All**      | `ra-diagnose.sh` — only if you're asked to send diagnostics *(Linux only for now)*    |
+| Platform     | Files to download from this folder                             |
+|--------------|----------------------------------------------------------------|
+| **Windows**  | *(nothing — your `.ovpn` file is enough)*                      |
+| **macOS**    | *(nothing — your `.ovpn` file is enough)*                      |
+| **Linux**    | `ra-nm-import.sh`, `ra-nm-cleanup.sh`, `90-ra-openvpn-route`   |
+| **Linux**    | `ra-diagnose.sh` — only if you're asked to send diagnostics    |
 
 ---
 
@@ -95,6 +95,14 @@ ping -c 3 192.168.7.1
 ## Linux 
 
 Linux needs one extra setup step because NetworkManager's OpenVPN plugin does not, by default, correctly handle the routing when eduVPN is stacked underneath. The `ra-nm-import.sh` script fixes this automatically.
+
+### Prerequisites (most users can skip)
+
+- Ubuntu with GNOME + NetworkManager (default installation).
+- The GNOME OpenVPN plugin for NetworkManager:
+  ```bash
+  sudo apt install network-manager-openvpn-gnome
+  ```
 
 ### One-time setup
 
